@@ -4,7 +4,9 @@ import numpy as np
 import pickle
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.metrics import mean_squared_error, r2_score
+import os
+import subprocess
+import sys
 
 # Set page configuration
 st.set_page_config(
@@ -14,14 +16,44 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Auto-train model if files don't exist
+@st.cache_resource
+def setup_model():
+    if not os.path.exists('wine_model.pkl') or not os.path.exists('scaler.pkl'):
+        with st.spinner('🔄 Training model for first time use... This may take a minute.'):
+            try:
+                result = subprocess.run([
+                    sys.executable, "train_model.py"
+                ], capture_output=True, text=True, timeout=120)
+                
+                if result.returncode == 0:
+                    st.success("✅ Model trained successfully!")
+                    return True
+                else:
+                    st.error(f"❌ Training failed: {result.stderr}")
+                    return False
+            except subprocess.TimeoutExpired:
+                st.error("❌ Training timed out. Please refresh the page.")
+                return False
+            except Exception as e:
+                st.error(f"❌ Training error: {str(e)}")
+                return False
+    return True
+
+# Initialize model
+model_setup = setup_model()
+
 # Load model and scaler
 @st.cache_resource
 def load_model():
-    with open('wine_model.pkl', 'rb') as f:
-        model = pickle.load(f)
-    with open('scaler.pkl', 'rb') as f:
-        scaler = pickle.load(f)
-    return model, scaler
+    try:
+        with open('wine_model.pkl', 'rb') as f:
+            model = pickle.load(f)
+        with open('scaler.pkl', 'rb') as f:
+            scaler = pickle.load(f)
+        return model, scaler
+    except FileNotFoundError:
+        return None, None
 
 model, scaler = load_model()
 
@@ -42,13 +74,16 @@ feature_descriptions = {
 
 # Sidebar
 st.sidebar.title("🍷 Wine Quality Predictor")
-st.sidebar.markdown("""
-This app predicts wine quality based on physicochemical properties using Machine Learning.
-""")
+st.sidebar.markdown("Predict wine quality based on physicochemical properties using ML")
+
+# Show status
+if not model_setup:
+    st.sidebar.warning("Model setup in progress...")
+elif model is None:
+    st.sidebar.error("Model not loaded")
 
 # Main content
 st.title("🍷 Wine Quality Prediction")
-st.markdown("Predict wine quality (0-10 scale) based on physicochemical properties")
 
 # Create tabs
 tab1, tab2, tab3, tab4 = st.tabs(["🔮 Prediction", "📊 Data Analysis", "📈 Model Info", "ℹ️ About"])
@@ -56,48 +91,42 @@ tab1, tab2, tab3, tab4 = st.tabs(["🔮 Prediction", "📊 Data Analysis", "📈
 with tab1:
     st.header("Wine Quality Prediction")
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Input Features")
+    if model is None or scaler is None:
+        st.error("⚠️ Model not ready. Please wait for setup to complete.")
+        st.info("If this persists, check the Streamlit logs for errors.")
+    else:
+        col1, col2 = st.columns(2)
         
-        # User input fields
-        fixed_acidity = st.slider("Fixed Acidity", 4.0, 16.0, 8.0, 0.1, help=feature_descriptions['fixed acidity'])
-        volatile_acidity = st.slider("Volatile Acidity", 0.1, 2.0, 0.5, 0.01, help=feature_descriptions['volatile acidity'])
-        citric_acid = st.slider("Citric Acid", 0.0, 1.0, 0.25, 0.01, help=feature_descriptions['citric acid'])
-        residual_sugar = st.slider("Residual Sugar", 0.5, 16.0, 2.5, 0.1, help=feature_descriptions['residual sugar'])
-        chlorides = st.slider("Chlorides", 0.01, 0.2, 0.08, 0.001, help=feature_descriptions['chlorides'])
+        with col1:
+            st.subheader("Input Features")
+            fixed_acidity = st.slider("Fixed Acidity", 4.0, 16.0, 8.0, 0.1)
+            volatile_acidity = st.slider("Volatile Acidity", 0.1, 2.0, 0.5, 0.01)
+            citric_acid = st.slider("Citric Acid", 0.0, 1.0, 0.25, 0.01)
+            residual_sugar = st.slider("Residual Sugar", 0.5, 16.0, 2.5, 0.1)
+            chlorides = st.slider("Chlorides", 0.01, 0.2, 0.08, 0.001)
+            
+        with col2:
+            st.subheader("")
+            free_sulfur_dioxide = st.slider("Free Sulfur Dioxide", 1, 72, 15, 1)
+            total_sulfur_dioxide = st.slider("Total Sulfur Dioxide", 6, 289, 45, 1)
+            density = st.slider("Density", 0.99, 1.01, 0.996, 0.001)
+            pH = st.slider("pH", 2.7, 4.0, 3.3, 0.01)
+            sulphates = st.slider("Sulphates", 0.3, 2.0, 0.65, 0.01)
+            alcohol = st.slider("Alcohol", 8.0, 15.0, 10.5, 0.1)
         
-    with col2:
-        st.subheader("")
-        free_sulfur_dioxide = st.slider("Free Sulfur Dioxide", 1, 72, 15, 1, help=feature_descriptions['free sulfur dioxide'])
-        total_sulfur_dioxide = st.slider("Total Sulfur Dioxide", 6, 289, 45, 1, help=feature_descriptions['total sulfur dioxide'])
-        density = st.slider("Density", 0.99, 1.01, 0.996, 0.001, help=feature_descriptions['density'])
-        pH = st.slider("pH", 2.7, 4.0, 3.3, 0.01, help=feature_descriptions['pH'])
-        sulphates = st.slider("Sulphates", 0.3, 2.0, 0.65, 0.01, help=feature_descriptions['sulphates'])
-        alcohol = st.slider("Alcohol", 8.0, 15.0, 10.5, 0.1, help=feature_descriptions['alcohol'])
-    
-    # Create input array
-    input_features = np.array([[fixed_acidity, volatile_acidity, citric_acid, residual_sugar,
-                              chlorides, free_sulfur_dioxide, total_sulfur_dioxide,
-                              density, pH, sulphates, alcohol]])
-    
-    # Scale features and make prediction
-    input_scaled = scaler.transform(input_features)
-    prediction = model.predict(input_scaled)[0]
-    
-    # Display prediction
-    st.markdown("---")
-    col1, col2, col3 = st.columns([1,2,1])
-    
-    with col2:
+        # Create input array and predict
+        input_features = np.array([[fixed_acidity, volatile_acidity, citric_acid, residual_sugar,
+                                  chlorides, free_sulfur_dioxide, total_sulfur_dioxide,
+                                  density, pH, sulphates, alcohol]])
+        
+        input_scaled = scaler.transform(input_features)
+        prediction = model.predict(input_scaled)[0]
+        
+        # Display prediction
+        st.markdown("---")
         st.subheader("Prediction Result")
         
-        # Create a quality meter
         quality_score = max(0, min(10, prediction))
-        quality_percentage = (quality_score / 10) * 100
-        
-        # Quality interpretation
         if quality_score >= 7:
             quality_text = "High Quality 🎉"
             color = "green"
@@ -108,12 +137,12 @@ with tab1:
             quality_text = "Low Quality 👎"
             color = "red"
         
-        # Display quality meter
+        # Quality meter
         fig = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
+            mode = "gauge+number",
             value = quality_score,
             domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': f"Wine Quality Score: {quality_text}"},
+            title = {'text': f"Wine Quality: {quality_text}"},
             gauge = {
                 'axis': {'range': [None, 10]},
                 'bar': {'color': color},
@@ -121,19 +150,13 @@ with tab1:
                     {'range': [0, 3], 'color': "lightgray"},
                     {'range': [3, 7], 'color': "gray"},
                     {'range': [7, 10], 'color': "darkgray"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': 9}
+                ]
             }
         ))
-        
         fig.update_layout(height=300)
         st.plotly_chart(fig, use_container_width=True)
-        
         st.info(f"**Predicted Quality Score:** {prediction:.2f}/10")
-
+        
 with tab2:
     st.header("Data Analysis")
     
